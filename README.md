@@ -1,6 +1,6 @@
 # SpotiDAB
 
-Automatically transfer your Spotify listening history to DAB. Upload your Spotify CSV export from [Exportify](https://exportify.net) and SpotiDAB will search for each track on DAB and like the matching songs.
+Automatically transfer your Spotify listening history to DAB. Upload your Spotify CSV export from [Exportify](https://exportify.app/) and SpotiDAB will search for each track on DAB and like the matching songs.
 
 ## Quick Start
 
@@ -25,7 +25,7 @@ pip install -r requirements.txt
 https://www.mozilla.org/firefox/
 
 # Get your Spotify Playlists as .csv from Exportify
-https://exportify.net
+https://exportify.app/
 
 # Run SpotiDAB
 python spotidab.py
@@ -43,7 +43,7 @@ python spotidab.py
 
 - Python 3.8+
 - Firefox browser
-- Spotify CSV export from [Exportify](https://exportify.net)
+- Spotify CSV export from [Exportify](https://exportify.app/)
 
 
 ## Troubleshooting
