@@ -3,7 +3,7 @@
 Automatically transfer your Spotify listening history to DAB. Upload your Spotify CSV export from [Exportify](https://exportify.app/) and SpotiDAB will search for each track on DAB and like the matching songs.
 
 ### How fast is it? 
-It will take around 7 Seconds per Track, or 11 Mintutes per 100 Tracks or 1 hour 56 Minutes per 1000 Tracks.
+It will take around 7 Seconds per Track, or 11 Minutes per 100 Tracks or 1 hour 56 Minutes per 1000 Tracks.
 
 **I Know** that this is not exactly instant but keep it running in the background and it will snyc your tracks without any issues. **I am working on a new version that will use the DAB API to automatically Sync your CSV in an instant.**
 ## Quick Start
@@ -69,7 +69,7 @@ python spotidab.py
   ```
 
 **Common Issues:**
-- Verify CSV has `Track Name` and `Artist Name(s)` columns
+- Verify CSV has `ISRC` column
 - Check internet connection
 - Confirm DAB login works
 - Ensure virtual environment is activated
