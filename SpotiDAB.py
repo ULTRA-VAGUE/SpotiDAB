@@ -1,7 +1,9 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import WebDriverException, NoSuchElementException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import WebDriverException, NoSuchElementException, TimeoutException, StaleElementReferenceException
 import pandas as pd
 import re
 import time
@@ -9,214 +11,180 @@ import tkinter as tk
 from tkinter import filedialog
 
 def select_csv_file():
-    """Open file dialog to pick CSV file"""
+    """Let user pick the Spotify CSV file"""
     root = tk.Tk()
     root.withdraw()
-    
     file_path = filedialog.askopenfilename(
         title="Select Spotify CSV file",
-        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        filetypes=[("CSV files", "*.csv")]
     )
-    
     root.destroy()
     return file_path
 
-def clean_text(text):
-    """Clean up text for searching"""
-    if pd.isna(text):
-        return ""
+def extract_isrc(isrc_value):
+    """Clean and validate ISRC code"""
+    if pd.isna(isrc_value):
+        return None
     
-    text = str(text)
-    text = text.replace(';', ' ')
-    text = re.sub(r'\s+', ' ', text)
-    text = text.strip()
+    isrc = str(isrc_value).strip().upper()
+    isrc = re.sub(r'[^A-Z0-9]', '', isrc)
     
-    return text
+    return isrc if len(isrc) == 12 else None
 
-def normalize_string(s):
-    """Make strings comparable for matching"""
-    if pd.isna(s):
-        return ""
-    
-    s = str(s)
-    s = s.lower()
-    s = s.replace('&', ' ')
-    s = s.replace(';', ' ')
-    s = s.replace(',', ' ')
-    s = s.replace(' feat ', ' ')
-    s = s.replace(' ft ', ' ')
-    s = re.sub(r'[^\w\s]', '', s)
-    s = re.sub(r'\s+', ' ', s).strip()
-    
-    return s
-
-def find_with_retry(element, by, value, retries=3):
-    """Try to find element multiple times if page is slow"""
-    for attempt in range(retries):
-        try:
-            return element.find_element(by, value)
-        except NoSuchElementException:
-            if attempt == retries - 1:
-                raise
-            time.sleep(1)
-    return None
-
-def find_matching_track(driver, search_track, search_artist):
-    """Look through results to find the right track"""
+def wait_for_search_results(driver, timeout=15):
+    """Wait for search results to load, handle network errors"""
     try:
-        time.sleep(2)
+        # First wait for the search to actually start
+        print("  ⏳ Waiting for search to complete...")
         
-        search_track_norm = normalize_string(search_track)
-        search_artist_norm = normalize_string(search_artist)
+        # Wait for either results or loading to finish
+        WebDriverWait(driver, timeout).until(
+            EC.any_of(
+                EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'p-4')]")),
+                EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'No results') or contains(text(), 'no results') or contains(text(), 'not found')]")),
+                EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Network error') or contains(text(), 'network error')]"))
+            )
+        )
         
-        print(f"  Looking for: '{search_track_norm}' by '{search_artist_norm}'")
+        # Check for network error
+        if driver.find_elements(By.XPATH, "//*[contains(text(), 'Network error') or contains(text(), 'network error')]"):
+            print("  🌐 Network error detected, retrying...")
+            return "retry"
         
-        try:
-            results = driver.find_elements(By.XPATH, "//div[contains(@class, 'p-4')]")
-            print(f"  Found {len(results)} results")
-        except NoSuchElementException:
-            print("  No results found")
+        # Check which one we got
+        if driver.find_elements(By.XPATH, "//div[contains(@class, 'p-4')]"):
+            # Wait a bit more for results to fully render
+            time.sleep(1.5)
+            return "success"
+        else:
+            print("  📭 No tracks found for this ISRC")
+            return "no_results"
+        
+    except TimeoutException:
+        print("  ⏰ Search timed out")
+        return "timeout"
+
+def find_matching_track(driver):
+    """Find the first valid track in search results"""
+    max_retries = 2
+    for attempt in range(max_retries):
+        result = wait_for_search_results(driver)
+        
+        if result == "retry":
+            if attempt < max_retries - 1:
+                print("  🔄 Retrying search due to network error...")
+                time.sleep(2)
+                continue
+            else:
+                return None
+        elif result == "no_results" or result == "timeout":
+            return None
+        elif result == "success":
+            break
+    
+    if result != "success":
+        return None
+    
+    try:
+        # Get fresh references to results
+        results = driver.find_elements(By.XPATH, "//div[contains(@class, 'p-4')]")
+        if not results:
             return None
         
-        matches = []
+        # Use the first result
+        result = results[0]
         
-        for i, result in enumerate(results):
+        # Extract track info
+        track_name = "Unknown"
+        artist_name = "Unknown"
+        
+        # Get track name | try multiple selectors
+        selectors = [
+            ".//h3[contains(@class, 'font-medium')]",
+            ".//h2",
+            ".//h1", 
+            ".//div[contains(@class, 'text-lg')]",
+            ".//div[contains(@class, 'font-bold')]"
+        ]
+        
+        for selector in selectors:
             try:
-                track_element = find_with_retry(result, By.XPATH, ".//h3[contains(@class, 'font-medium')]")
-                result_track = track_element.text if track_element else "Unknown"
-                
-                result_artist = "Unknown"
-                try:
-                    p_elements = result.find_elements(By.XPATH, ".//p[contains(@class, 'text-emerald-400') or contains(@class, 'text-white')]")
-                    for p in p_elements:
-                        text = p.text
-                        if text and not text.startswith("Album:") and len(text) > 2:
-                            result_artist = text
-                            break
-                except:
-                    pass
-                
-                result_track_norm = normalize_string(result_track)
-                result_artist_norm = normalize_string(result_artist)
-                
-                track_match = search_track_norm in result_track_norm or result_track_norm in search_track_norm
-                artist_match = (search_artist_norm in result_artist_norm or 
-                               result_artist_norm in search_artist_norm or
-                               any(word in result_artist_norm for word in search_artist_norm.split()))
-                
-                if track_match and artist_match:
-                    confidence = len(search_track_norm) / len(result_track_norm) if result_track_norm else 0
-                    matches.append({
-                        'track': result_track,
-                        'artist': result_artist,
-                        'element': result,
-                        'confidence': confidence
-                    })
-                    print(f"  Possible match: {result_track} - {result_artist}")
-                
-            except Exception as e:
+                elements = result.find_elements(By.XPATH, selector)
+                for elem in elements:
+                    text = elem.text.strip()
+                    if text and len(text) > 1:
+                        track_name = text
+                        break
+                if track_name != "Unknown":
+                    break
+            except:
                 continue
         
-        if matches:
-            best_match = max(matches, key=lambda x: x['confidence'])
-            print(f"  Best match: {best_match['track']} - {best_match['artist']}")
-            return best_match
+        # Get artist name
+        try:
+            # Look for artist text
+            all_text_elements = result.find_elements(By.XPATH, ".//p | .//span | .//div[@class]")
+            for elem in all_text_elements:
+                text = elem.text.strip()
+                if (text and text != track_name and len(text) > 1 and 
+                    len(text) < 100 and not text.startswith("Album:")):
+                    artist_name = text
+                    break
+        except:
+            pass
+        
+        if track_name != "Unknown":
+            print(f"  ✅ Found: {track_name} - {artist_name}")
+            return {
+                'track': track_name,
+                'artist': artist_name,
+                'result_index': 0
+            }
         else:
-            print("  No matching track found")
+            print("  ❌ Could not extract track info")
             return None
             
     except Exception as e:
-        print(f"  Search error: {e}")
+        print(f"  ❌ Search error: {e}")
         return None
 
-def click_like_button(driver, result_element, track_name):
-    """Click the like button, only show what worked"""
+def click_like_button(driver, result_index, track_name):
+    """Click the like button"""
     try:
-        time.sleep(1)
+        # Get fresh result reference
+        results = driver.find_elements(By.XPATH, "//div[contains(@class, 'p-4')]")
+        if not results or len(results) <= result_index:
+            return False
         
-        # Try direct container search first
-        try:
-            track_container = find_with_retry(result_element, By.XPATH, ".//div[contains(@class, 'flex items-center gap-2')]")
-            like_button = find_with_retry(track_container, By.XPATH, ".//button[.//svg[contains(@class, 'lucide-heart')]]")
-            
-            svg_element = find_with_retry(like_button, By.XPATH, ".//svg")
-            svg_class = svg_element.get_attribute("class")
-            
-            if "fill-red-400" in svg_class:
-                print(f"  Already liked: {track_name}")
-                return True
-            else:
-                like_button.click()
-                time.sleep(1)
-                print(f"  Liked: {track_name}")
-                return True
-        except:
-            pass
+        result = results[result_index]
         
-        # Try aria-label search
-        try:
-            like_buttons = result_element.find_elements(By.XPATH, ".//button[@aria-label='Add to favorites']")
-            if like_buttons:
-                svg_element = like_buttons[0].find_element(By.XPATH, ".//svg")
-                svg_class = svg_element.get_attribute("class")
-                
-                if "fill-red-400" in svg_class:
-                    print(f"  Already liked: {track_name}")
-                    return True
-                else:
-                    like_buttons[0].click()
-                    time.sleep(1)
-                    print(f"  Liked: {track_name}")
-                    return True
-        except:
-            pass
+        # Look for like button with heart icon
+        like_buttons = result.find_elements(By.XPATH, ".//button[.//*[name()='svg']]")
         
-        # Last resort: JavaScript click
-        try:
-            like_buttons = result_element.find_elements(By.XPATH, ".//button[.//*[name()='svg']]")
-            for button in like_buttons:
+        for button in like_buttons:
+            try:
                 svg = button.find_element(By.XPATH, ".//*[name()='svg']")
                 svg_html = svg.get_attribute('outerHTML')
-                if 'lucide-heart' in svg_html:
-                    svg_class = svg.get_attribute("class")
+                if 'heart' in svg_html.lower() or 'lucide-heart' in svg_html:
+                    svg_class = svg.get_attribute("class") or ""
                     
-                    if "fill-red-400" in svg_class:
-                        print(f"  Already liked: {track_name}")
+                    if "fill-red" in svg_class:
+                        print(f"  💖 Already liked: {track_name}")
                         return True
                     else:
                         driver.execute_script("arguments[0].click();", button)
-                        time.sleep(1)
-                        print(f"  Liked: {track_name}")
+                        time.sleep(1)  # Wait for like to register
+                        print(f"  💖 Liked: {track_name}")
                         return True
-        except:
-            pass
+            except StaleElementReferenceException:
+                continue
         
-        print(f"  Could not like: {track_name}")
+        print(f"  ❌ No like button found: {track_name}")
         return False
         
     except Exception as e:
-        print(f"  Like error: {e}")
+        print(f"  ❌ Like error: {e}")
         return False
-
-def check_driver_connection(driver):
-    """Check if browser connection is still working"""
-    try:
-        driver.current_url
-        return True
-    except WebDriverException:
-        return False
-
-def validate_csv_columns(df):
-    """Make sure CSV has the right columns"""
-    required_columns = ["Track Name", "Artist Name(s)"]
-    missing_columns = [col for col in required_columns if col not in df.columns]
-    
-    if missing_columns:
-        print(f"Missing columns: {missing_columns}")
-        print(f"Available columns: {list(df.columns)}")
-        return False
-    
-    return True
 
 def main():
     try:
@@ -237,118 +205,89 @@ def main():
             driver.quit()
             return
 
-        try:
-            df = pd.read_csv(csv_file)
-            print(f"Loaded CSV: {len(df)} songs found")
-            
-            if not validate_csv_columns(df):
-                print("Wrong CSV format. Please check your file.")
-                driver.quit()
-                return
-                
-        except pd.errors.EmptyDataError:
-            print("CSV file is empty")
-            driver.quit()
-            return
-        except pd.errors.ParserError:
-            print("Could not read CSV file")
-            driver.quit()
-            return
-        except Exception as e:
-            print(f"Error loading CSV: {e}")
+        # Load and validate CSV
+        df = pd.read_csv(csv_file)
+        print(f"Loaded CSV with {len(df)} songs")
+        
+        if "ISRC" not in df.columns:
+            print("CSV missing ISRC column. Please export from Exportify.app with ISRC codes.")
             driver.quit()
             return
 
-        print(f"\nStarting SpotiDAB for {len(df)} songs...")
+        # ISRC cleanup
+        valid_tracks = []
+        for index, row in df.iterrows():
+            isrc = extract_isrc(row.get("ISRC"))
+            if isrc:
+                track = row.get("Track Name", "Unknown")
+                artist = row.get("Artist Name(s)", "Unknown")
+                valid_tracks.append({
+                    'isrc': isrc,
+                    'track': track,
+                    'artist': artist
+                })
+
+        print(f"\nFound {len(valid_tracks)} songs with valid ISRC codes")
+        print("Starting the like party! 🎉")
         print("=" * 50)
         
-        found_tracks = []
+        liked_count = 0
         not_found = []
-        liked_tracks = []
         
-        start_index = 0
-        
-        for index, row in df.iloc[start_index:].iterrows():
-            if not check_driver_connection(driver):
-                print("Browser connection lost! Restart SpotiDAB.")
-                break
-                
-            track = clean_text(row["Track Name"])
-            artist = clean_text(row["Artist Name(s)"])
+        for i, item in enumerate(valid_tracks):
+            print(f"\n{i+1}/{len(valid_tracks)}: {item['track']} - {item['artist']}")
+            print(f"  ISRC: {item['isrc']}")
             
-            if track and artist:
-                search_term = f"{track} {artist}"
-                print(f"\n{index+1}/{len(df)}: {search_term}")
+            try:
+                # Search by ISRC
+                search_field = driver.find_element(By.XPATH, "//input[@placeholder='Search for songs, artists, or albums...']")
+                search_field.clear()
+                search_field.send_keys(item['isrc'])
+                search_field.send_keys(Keys.RETURN)
                 
+                # Wait longer for search to complete
+                time.sleep(3)
+                
+                # Find and like track
+                match = find_matching_track(driver)
+                
+                if match:
+                    if click_like_button(driver, match['result_index'], match['track']):
+                        liked_count += 1
+                else:
+                    print(f"  ❌ Track not found in DAB database")
+                    not_found.append(f"{item['track']} - {item['artist']} (ISRC: {item['isrc']})")
+                
+                # Return to homepage with longer wait
+                print("  ↪️ Returning to homepage...")
+                driver.get("https://dab.yeet.su")
+                time.sleep(2)
+                
+            except Exception as e:
+                print(f"  ❌ Error processing track: {e}")
                 try:
-                    search_field = driver.find_element(By.XPATH, "//input[@placeholder='Search for songs, artists, or albums...']")
-                    search_field.clear()
-                    search_field.send_keys(search_term)
-                    search_field.send_keys(Keys.RETURN)
-                    
-                    time.sleep(3)
-                    
-                    match = find_matching_track(driver, track, artist)
-                    
-                    if match:
-                        found_tracks.append({
-                            'original_track': track,
-                            'original_artist': artist,
-                            'found_track': match['track'],
-                            'found_artist': match['artist']
-                        })
-                        
-                        if click_like_button(driver, match['element'], match['track']):
-                            liked_tracks.append(f"{match['track']} - {match['artist']}")
-                        
-                    else:
-                        not_found.append(f"{track} - {artist}")
-                    
-                    print("  Returning to homepage...")
                     driver.get("https://dab.yeet.su")
-                    time.sleep(2)
-                    
-                except WebDriverException as e:
-                    print(f"  Browser error: {e}")
-                    try:
-                        driver.get("https://dab.yeet.su")
-                        time.sleep(2)
-                    except:
-                        break
-                except Exception as e:
-                    print(f"  Error: {e}")
-                    try:
-                        driver.get("https://dab.yeet.su")
-                        time.sleep(2)
-                    except:
-                        pass
-        
+                    time.sleep(3)
+                except:
+                    print("  💥 Browser crashed, stopping...")
+                    break
+
         print("\n" + "=" * 50)
-        print("SPOTIDAB RESULTS:")
-        print(f"Found tracks: {len(found_tracks)}/{len(df)}")
-        print(f"Liked tracks: {len(liked_tracks)}")
-        print(f"Not found: {len(not_found)}")
-        
-        if liked_tracks:
-            print("\nLiked tracks:")
-            for track in liked_tracks[:10]:
-                print(f"  {track}")
+        print("ALL DONE! 🎵")
+        print(f"Successfully liked: {liked_count}/{len(valid_tracks)} songs")
         
         if not_found:
-            print(f"\nNot found (first 10):")
+            print(f"\nCouldn't find {len(not_found)} songs in DAB database:")
             for track in not_found[:10]:
                 print(f"  {track}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Oops, something went wrong: {e}")
 
     finally:
-        print("\nPress ENTER to exit...")
-        try:
-            input()
-            driver.quit()
-        except:
-            pass
+        print("\nPress ENTER to close the browser...")
+        input()
+        driver.quit()
 
 if __name__ == "__main__":
     main()
