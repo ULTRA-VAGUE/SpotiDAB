@@ -32,7 +32,7 @@ https://www.mozilla.org/firefox/
 https://exportify.app/
 
 # Run SpotiDAB
-python spotidab.py
+python SpotiDAB.py
 ```
 
 ## What Happens Next
